@@ -107,9 +107,34 @@ class BountyClaim(gl.Contract):
                 now = datetime.fromisoformat(json.loads(page)["utc_datetime"].replace("Z", "+00:00"))
                 start = datetime.fromisoformat(submit_start.replace("Z", "+00:00"))
                 elapsed_hours = (now - start).total_seconds() / 3600
-                return json.dumps({"deadline_passed": elapsed_hours >= window_hours})
+                return json.dumps({
+                    "deadline_passed": elapsed_hours >= window_hours,
+                    "elapsed_hours_rounded": round(elapsed_hours, 1),
+                })
 
-            deadline_passed = json.loads(gl.eq_principle.strict_eq(check_deadline))["deadline_passed"]
+            # This checks live external time data, which will never be
+            # byte-identical across independent validator fetches (each
+            # queries a fraction of a second apart). The deadline itself
+            # is a stable, already-stored value (submitted_at + window);
+            # only the "has it passed" judgment needs tolerance for the
+            # few seconds of fetch skew between validators.
+            deadline_raw = gl.eq_principle.prompt_non_comparative(
+                check_deadline,
+                task=(
+                    f"Determine whether at least {window_hours} hours have "
+                    f"elapsed since {submit_start}, based on the current "
+                    "time fetched from a reliable UTC time source."
+                ),
+                criteria=(
+                    "Accept the leader's deadline_passed value if it is "
+                    "consistent with your own independently fetched current "
+                    "time, allowing for a few seconds of natural variance "
+                    "between validators' fetch calls. Only reject if the "
+                    "leader's conclusion is clearly wrong by a wide margin, "
+                    "not because your exact timestamp differs by seconds."
+                ),
+            )
+            deadline_passed = json.loads(deadline_raw)["deadline_passed"]
             assert deadline_passed, (
                 "The poster must dispute, or the response deadline must "
                 "pass, before an undisputed submission auto-resolves"
@@ -122,6 +147,8 @@ class BountyClaim(gl.Contract):
         poster_dispute_url = self.poster_dispute_url
 
         def get_verdict() -> str:
+            # Anchor the decision: fetch the actual proof (and any dispute
+            # source) rather than trusting descriptions of either.
             proof_content = "(no proof URL provided)"
             if proof_url:
                 try:
@@ -167,9 +194,34 @@ with compact JSON in this exact shape, no extra text:
             assert parsed.get("verdict") in ("approved", "rejected"), "Invalid verdict value from reviewer"
             return json.dumps(parsed, sort_keys=True)
 
-        raw = gl.eq_principle.strict_eq(get_verdict)
+        # strict_eq requires byte-identical output, but every LLM call
+        # phrases "reason" differently even when the underlying judgment
+        # agrees — that would make consensus fail almost every time.
+        # prompt_non_comparative lets validators judge the leader's output
+        # against explicit criteria instead: consensus is required on the
+        # bounded verdict field, while wording differences in the
+        # free-form reason are explicitly tolerated.
+        raw = gl.eq_principle.prompt_non_comparative(
+            get_verdict,
+            task=(
+                "Judge whether the fetched proof-of-work content actually "
+                "satisfies the given task specification, producing a "
+                "bounded verdict of exactly 'approved' or 'rejected' with "
+                "a short supporting reason."
+            ),
+            criteria=(
+                "Accept the leader's output if your own independent "
+                "judgment reaches the same 'verdict' value ('approved' or "
+                "'rejected') based on the same fetched proof and dispute "
+                "content. The exact wording of the 'reason' field does not "
+                "need to match — only the bounded verdict value must "
+                "agree. Reject only if the verdict itself is unsupported "
+                "by the fetched content."
+            ),
+        )
         parsed = json.loads(raw)
 
+        # Explicit, deterministic validation before any payout.
         assert parsed["verdict"] in ("approved", "rejected"), "Resolution produced an invalid verdict"
 
         self.verdict = parsed["verdict"]
@@ -214,4 +266,4 @@ with compact JSON in this exact shape, no extra text:
             "submitted_at": self.submitted_at,
             "verdict": self.verdict,
             "verdict_reason": self.verdict_reason,
-      }
+        }
