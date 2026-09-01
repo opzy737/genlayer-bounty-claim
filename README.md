@@ -10,6 +10,10 @@ An Intelligent Contract for verified bounty payouts using GenLayer's Equivalence
 4. `resolve_bounty()` requires a dispute or a passed deadline. Validators fetch the actual proof (and dispute source, if any) and rule on whether it satisfies the task spec.
 5. The escrowed reward auto-releases to whichever party the evidence supports.
 
+## Consensus design
+
+Both the deadline check and the verdict use `prompt_non_comparative` rather than `strict_eq`. Live timestamp fetches and free-form LLM reasoning can never match byte-for-byte across independent validators, so consensus is scoped to what's actually bounded — the deadline-passed boolean and the approved/rejected verdict — while wording differences in supporting text are explicitly tolerated by the evaluation criteria.
+
 ## Methods
 
 - `fund_bounty()` — payable, poster only
@@ -23,6 +27,8 @@ An Intelligent Contract for verified bounty payouts using GenLayer's Equivalence
 
 pip install genlayer-test
 gltest --network localnet tests/test_bounty_claim.py
+
+Covers both the disputed settlement path and the undisputed/deadline-passed settlement path, using real signing accounts for the poster and submitter roles.
 
 ## Built for
 
